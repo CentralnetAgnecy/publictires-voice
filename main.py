@@ -42,6 +42,12 @@ Tes phrases sont courtes et directes, comme au téléphone.
 Tu vouvoies le client.
 IMPORTANT: Ne dis JAMAIS "Bonjour" deux fois. C'est juste au début de l'appel!
 
+OBJECTION HANDLING:
+Si client dit "C'est trop cher": "Je comprends! On a des pneus excellents à meilleur prix. Quel est votre budget?"
+Si client dit "Pas maintenant": "Bien sûr! Quand serait bon pour vous? Je peux vous laisser notre numéro."
+Si client dit "J'ai déjà des pneus": "Et pour l'installation? Ramassage gratuit chez PneusPJ!"
+Si client dit "Pourquoi vous": "Pneus de qualité, prix compétitifs, et installation pro avec ramassage gratuit!"
+
 RÈGLES TECHNIQUES POUR LA VOIX:
 - JAMAIS d'émojis, astérisques, tirets, listes, puces ou formatage
 - JAMAIS de parenthèses ou crochets
@@ -62,6 +68,61 @@ IMPORTANT: Donne toujours une réponse complète et utile. Avance vers la vente.
 
 conversations = {}
 call_logs = []
+call_records = {}  # Store detailed call analytics
+
+
+class CallRecord:
+    """Store call metadata for analytics"""
+    def __init__(self, call_sid, phone_number):
+        self.call_sid = call_sid
+        self.phone_number = phone_number
+        self.start_time = datetime.utcnow()
+        self.messages = []
+        self.intent = None
+        self.sentiment = "neutral"
+        self.outcome = "in_progress"
+        self.tire_size_mentioned = None
+        self.objections = []
+        
+    def add_message(self, role, text):
+        self.messages.append({
+            "role": role,
+            "text": text,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
+        # Detect intent
+        text_lower = text.lower()
+        if any(w in text_lower for w in ["pneu", "tire", "205", "235", "195"]):
+            self.intent = "tire_inquiry"
+        elif any(w in text_lower for w in ["install", "ramassage", "pickup"]):
+            self.intent = "installation"
+        elif any(w in text_lower for w in ["prix", "price", "combien", "cost"]):
+            self.intent = "pricing"
+            
+        # Detect objections
+        if any(w in text_lower for w in ["trop cher", "expensive", "price too high"]):
+            self.objections.append("price")
+        elif any(w in text_lower for w in ["pas maintenant", "later", "réfléchir"]):
+            self.objections.append("timing")
+        elif any(w in text_lower for w in ["déjà", "already have"]):
+            self.objections.append("already_has")
+            
+    def to_dict(self):
+        return {
+            "call_sid": self.call_sid,
+            "phone": self.phone_number,
+            "start_time": self.start_time.isoformat(),
+            "duration_seconds": (datetime.utcnow() - self.start_time).total_seconds(),
+            "intent": self.intent,
+            "sentiment": self.sentiment,
+            "outcome": self.outcome,
+            "tire_size": self.tire_size_mentioned,
+            "objections_count": len(self.objections),
+            "objections": self.objections,
+            "message_count": len(self.messages),
+            "messages": self.messages[-5:] if self.messages else []  # Last 5 messages
+        }
 
 
 def detect_tire_size(text):
@@ -218,16 +279,32 @@ def get_gemini_response(user_message, call_sid="default"):
         return "Visitez pneus public point ca pour nous contacter."
 
 
-def log_call(call_sid, user_said, ai_said):
-    """Log for analysis"""
+def log_call(call_sid, user_said, ai_said, phone_number=None):
+    """Log for analysis with detailed analytics"""
+    # Simple log
     call_logs.append({
         "ts": datetime.utcnow().isoformat(),
         "sid": call_sid,
         "user": user_said,
         "ai": ai_said
     })
-    logger.info(f"LOG | User: '{user_said}' | AI: '{ai_said[:80]}'")
-    if len(call_logs) > 100:
+    
+    # Detailed record
+    if call_sid not in call_records:
+        call_records[call_sid] = CallRecord(call_sid, phone_number or "unknown")
+    
+    record = call_records[call_sid]
+    record.add_message("user", user_said)
+    record.add_message("assistant", ai_said)
+    
+    # Detect tire size mentioned
+    import re as _re
+    tire_match = _re.search(r'(\d{3})\s(\d{2,3})', user_said)
+    if tire_match:
+        record.tire_size_mentioned = f"{tire_match.group(1)}/{tire_match.group(2)}"
+    
+    logger.info(f"LOG | User: '{user_said[:50]}' | AI: '{ai_said[:50]}' | Intent: {record.intent}")
+    if len(call_logs) > 200:
         call_logs.pop(0)
 
 
@@ -287,7 +364,8 @@ def respond():
 
     # Get Gemini Flash response (FAST!)
     ai_response = get_gemini_response(user_input, call_sid)
-    log_call(call_sid, user_input, ai_response)
+    phone = request.form.get("Caller", "unknown")
+    log_call(call_sid, user_input, ai_response, phone)
 
     response.say(ai_response, voice=VOICE, language=LANG)
 
@@ -335,9 +413,79 @@ def health_check():
         "status": "healthy",
         "ai": "Gemini 2.5 Flash (~300ms)",
         "voice": "Polly.Gabrielle-Neural (fr-CA)",
-        "version": "V4",
-        "calls_logged": len(call_logs)
+        "version": "V4.5",
+        "calls_logged": len(call_logs),
+        "call_records": len(call_records),
+        "features": ["recording", "analytics", "objection_handling", "tire_detection"]
     }
+
+
+@app.route("/call-records")
+def get_call_records():
+    """Get detailed call analytics"""
+    records = [record.to_dict() for record in call_records.values()]
+    return {
+        "total_calls": len(records),
+        "records": records[-20:]  # Last 20 calls
+    }
+
+
+@app.route("/call-stats")
+def get_call_stats():
+    """Get aggregated statistics"""
+    if not call_records:
+        return {"message": "No call data yet"}
+    
+    records = list(call_records.values())
+    
+    intents = {}
+    objections_list = []
+    outcomes = {}
+    
+    for record in records:
+        # Count intents
+        if record.intent:
+            intents[record.intent] = intents.get(record.intent, 0) + 1
+        # Collect objections
+        objections_list.extend(record.objections)
+        # Count outcomes
+        outcomes[record.outcome] = outcomes.get(record.outcome, 0) + 1
+    
+    return {
+        "total_calls": len(records),
+        "intents": intents,
+        "top_objections": dict(sorted({o: objections_list.count(o) for o in set(objections_list)}.items(), 
+                                     key=lambda x: x[1], reverse=True)),
+        "outcomes": outcomes,
+        "avg_messages_per_call": sum(r.message_count for r in records) / len(records)
+    }
+
+
+@app.route("/export-csv")
+def export_csv():
+    """Export call data as CSV"""
+    import csv
+    from io import StringIO
+    
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=[
+        "call_sid", "phone", "start_time", "intent", "objections_count", "tire_size", "message_count"
+    ])
+    writer.writeheader()
+    
+    for record in call_records.values():
+        data = record.to_dict()
+        writer.writerow({
+            "call_sid": data["call_sid"],
+            "phone": data["phone"],
+            "start_time": data["start_time"],
+            "intent": data["intent"],
+            "objections_count": data["objections_count"],
+            "tire_size": data["tire_size"],
+            "message_count": data["message_count"]
+        })
+    
+    return output.getvalue(), 200, {"Content-Disposition": "attachment; filename=calls.csv"}
 
 
 if __name__ == "__main__":
