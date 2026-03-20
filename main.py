@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-PublicTires AI Voice Agent - V3 Optimized
-Claude Sonnet 4 + Polly Gabrielle (fr-CA)
-+ Text cleanup (no emoji, proper pronunciation)
-+ Call logging for continuous improvement
+PublicTires AI Voice Agent - V4 GEMINI FLASH
+Gemini 2.5 Flash (~300ms!) + Polly Gabrielle (fr-CA)
+Ultra-fast responses with speech recognition
 """
 
 import os
@@ -15,14 +14,15 @@ from flask import Flask, request
 from twilio.twiml.voice_response import VoiceResponse
 import requests as http_requests
 
-# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
 # Config
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+
 VOICE = "Polly.Gabrielle-Neural"
 LANG = "fr-CA"
 
@@ -40,9 +40,9 @@ RÈGLES CRITIQUES POUR LA VOIX:
 1. Parle en français québécois naturel
 2. Maximum 2-3 phrases par réponse
 3. JAMAIS d'émojis, de symboles, d'astérisques ou de tirets
-4. JAMAIS de listes à puces
-5. Pour le site web dis: pneus public point ca (tout en français, mots séparés)
-6. Ne dis JAMAIS "publictires" comme un mot anglais. Dis plutôt "pneus public point ca"
+4. JAMAIS de listes à puces ou de formatage
+5. Pour le site web dis: pneus public point ca
+6. Ne dis JAMAIS publictires comme un mot anglais
 7. Pour les prix: dirige vers le site web
 8. Ne JAMAIS inventer un prix ou une disponibilité
 9. Les nombres en lettres: cinq cent, pas 500
@@ -50,38 +50,27 @@ RÈGLES CRITIQUES POUR LA VOIX:
 11. Sois conversationnelle, comme une vraie personne au téléphone
 12. Propose toujours d'aider davantage à la fin"""
 
-# Conversation memory per call
 conversations = {}
-
-# Call logs for improvement
 call_logs = []
 
 
 def clean_for_speech(text):
-    """Clean text for natural speech synthesis - remove everything that sounds weird"""
+    """Clean text for natural speech"""
     # Remove emojis
     emoji_pattern = re.compile(
-        "[\U0001F600-\U0001F64F"  # emoticons
-        "\U0001F300-\U0001F5FF"  # symbols & pictographs
-        "\U0001F680-\U0001F6FF"  # transport & map
-        "\U0001F1E0-\U0001F1FF"  # flags
-        "\U00002702-\U000027B0"
-        "\U000024C2-\U0001F251"
-        "\U0001f926-\U0001f937"
-        "\U00010000-\U0010ffff"
-        "\u2640-\u2642"
-        "\u2600-\u2B55"
-        "\u200d\u23cf\u23e9\u231a\ufe0f\u3030"
-        "]+", flags=re.UNICODE
+        "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
+        "\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U000024C2-\U0001F251"
+        "\U0001f926-\U0001f937\U00010000-\U0010ffff\u2640-\u2642\u2600-\u2B55"
+        "\u200d\u23cf\u23e9\u231a\ufe0f\u3030]+", flags=re.UNICODE
     )
     text = emoji_pattern.sub('', text)
 
-    # Remove markdown formatting
-    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **bold**
-    text = re.sub(r'\*([^*]+)\*', r'\1', text)  # *italic*
-    text = re.sub(r'#{1,6}\s', '', text)  # headers
-    text = re.sub(r'[-•]\s', '', text)  # bullet points
-    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)  # links
+    # Remove markdown
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    text = re.sub(r'#{1,6}\s', '', text)
+    text = re.sub(r'[-•]\s', '', text)
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
 
     # Fix URL pronunciation
     text = text.replace('pneuspublic.ca', 'pneus public point ca')
@@ -90,65 +79,57 @@ def clean_for_speech(text):
     text = text.replace('publictires', 'pneus public')
     text = text.replace('pneuspublic', 'pneus public')
 
-    # Fix phone number pronunciation
+    # Fix phone
     text = text.replace('514-459-4500', 'cinq-un-quatre, quatre-cinq-neuf, quatre-cinq-zéro-zéro')
 
-    # Remove parentheses content that sounds weird
+    # Remove special chars
     text = re.sub(r'\([^)]*\)', '', text)
-
-    # Remove special characters
-    text = text.replace('*', '')
-    text = text.replace('#', '')
-    text = text.replace('_', ' ')
-    text = text.replace('`', '')
-
-    # Clean extra whitespace
+    text = text.replace('*', '').replace('#', '').replace('`', '')
     text = re.sub(r'\s+', ' ', text).strip()
 
     return text
 
 
-def get_claude_response(user_message, call_sid="default"):
-    """Get response from Claude Sonnet 4"""
-    if not ANTHROPIC_API_KEY:
+def get_gemini_response(user_message, call_sid="default"):
+    """Get ultra-fast response from Gemini 2.5 Flash"""
+    if not GEMINI_API_KEY:
         return "Visitez pneus public point ca pour nous contacter."
 
     if call_sid not in conversations:
         conversations[call_sid] = []
 
-    conversations[call_sid].append({"role": "user", "content": user_message})
-    history = conversations[call_sid][-4:]
+    conversations[call_sid].append({"role": "user", "parts": [{"text": user_message}]})
+
+    # Build conversation with system prompt
+    contents = []
+    # Add history (last 4 turns)
+    for msg in conversations[call_sid][-4:]:
+        contents.append(msg)
 
     try:
-        headers = {
-            "x-api-key": ANTHROPIC_API_KEY,
-            "content-type": "application/json",
-            "anthropic-version": "2023-06-01"
-        }
-
         data = {
-            "model": "claude-sonnet-4-20250514",
-            "max_tokens": 100,
-            "system": SYSTEM_PROMPT,
-            "messages": history
+            "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": 100,
+                "temperature": 0.7
+            }
         }
 
         response = http_requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers=headers,
+            GEMINI_URL,
             json=data,
-            timeout=6
+            timeout=5
         )
 
         if response.status_code == 200:
             result = response.json()
-            msg = result["content"][0]["text"]
-            # Clean for speech BEFORE saving
+            msg = result["candidates"][0]["content"]["parts"][0]["text"]
             msg = clean_for_speech(msg)
-            conversations[call_sid].append({"role": "assistant", "content": msg})
+            conversations[call_sid].append({"role": "model", "parts": [{"text": msg}]})
             return msg
         else:
-            logger.error(f"Claude error: {response.status_code}")
+            logger.error(f"Gemini error: {response.status_code} - {response.text[:200]}")
             return "Désolé, visitez pneus public point ca ou rappelez-nous."
     except Exception as e:
         logger.error(f"Error: {str(e)}")
@@ -156,24 +137,21 @@ def get_claude_response(user_message, call_sid="default"):
 
 
 def log_call(call_sid, user_said, ai_said):
-    """Log conversation for analysis and improvement"""
-    entry = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "call_sid": call_sid,
+    """Log for analysis"""
+    call_logs.append({
+        "ts": datetime.utcnow().isoformat(),
+        "sid": call_sid,
         "user": user_said,
         "ai": ai_said
-    }
-    call_logs.append(entry)
-    logger.info(f"CALL LOG | User: '{user_said}' | AI: '{ai_said[:80]}...'")
-
-    # Keep last 100 logs in memory
+    })
+    logger.info(f"LOG | User: '{user_said}' | AI: '{ai_said[:80]}'")
     if len(call_logs) > 100:
         call_logs.pop(0)
 
 
 @app.route("/")
 def health():
-    return "PublicTires Voice Agent V3 ✓"
+    return "PublicTires Voice Agent V4 ✓ (Gemini 2.5 Flash)"
 
 
 @app.route("/call", methods=["POST"])
@@ -187,7 +165,7 @@ def incoming_call():
         voice=VOICE, language=LANG
     )
 
-    gather = response.gather(
+    response.gather(
         input="speech dtmf",
         action="/respond",
         method="POST",
@@ -225,17 +203,13 @@ def respond():
         response.redirect("/call")
         return str(response)
 
-    # Get Claude response (already cleaned)
-    claude_response = get_claude_response(user_input, call_sid)
+    # Get Gemini Flash response (FAST!)
+    ai_response = get_gemini_response(user_input, call_sid)
+    log_call(call_sid, user_input, ai_response)
 
-    # Log for improvement
-    log_call(call_sid, user_input, claude_response)
+    response.say(ai_response, voice=VOICE, language=LANG)
 
-    # Speak response
-    response.say(claude_response, voice=VOICE, language=LANG)
-
-    # Continue conversation
-    gather = response.gather(
+    response.gather(
         input="speech dtmf",
         action="/respond",
         method="POST",
@@ -250,64 +224,37 @@ def respond():
     return str(response)
 
 
-# ==========================================
-# MONITORING & IMPROVEMENT ENDPOINTS
-# ==========================================
-
-@app.route("/logs", methods=["GET"])
+@app.route("/logs")
 def get_logs():
-    """View recent call logs for analysis"""
     return {"total": len(call_logs), "logs": call_logs[-20:]}
 
 
-@app.route("/analyze", methods=["GET"])
+@app.route("/analyze")
 def analyze():
-    """Analyze calls and suggest improvements"""
     if not call_logs:
         return {"message": "No calls yet"}
-
-    total = len(call_logs)
     topics = {}
     for log in call_logs:
-        user_msg = log["user"].lower()
-        if "prix" in user_msg or "combien" in user_msg or "coût" in user_msg:
+        u = log["user"].lower()
+        if any(w in u for w in ["prix", "combien", "coût"]):
             topics["prix"] = topics.get("prix", 0) + 1
-        elif "install" in user_msg:
+        elif "install" in u:
             topics["installation"] = topics.get("installation", 0) + 1
-        elif "pneu" in user_msg or "tire" in user_msg:
+        elif any(w in u for w in ["pneu", "tire"]):
             topics["pneus"] = topics.get("pneus", 0) + 1
-        elif "hiver" in user_msg or "neige" in user_msg:
-            topics["pneus_hiver"] = topics.get("pneus_hiver", 0) + 1
         else:
             topics["autre"] = topics.get("autre", 0) + 1
-
-    return {
-        "total_interactions": total,
-        "topics": topics,
-        "suggestions": [
-            "Si beaucoup de questions prix: ajouter plus de détails prix dans le prompt",
-            "Si beaucoup d'installations: ajouter les heures d'ouverture",
-            "Si beaucoup de pneus hiver: ajouter promotions saisonnières"
-        ]
-    }
+    return {"total": len(call_logs), "topics": topics}
 
 
 @app.route("/health")
 def health_check():
     return {
         "status": "healthy",
-        "ai": "Claude Sonnet 4",
+        "ai": "Gemini 2.5 Flash (~300ms)",
         "voice": "Polly.Gabrielle-Neural (fr-CA)",
-        "version": "V3",
-        "features": [
-            "Speech recognition fr-CA",
-            "Claude AI intelligence",
-            "Text cleanup (no emoji/symbols)",
-            "URL pronunciation fix",
-            "Call logging & analytics",
-            "Multi-turn conversation"
-        ],
-        "total_calls_logged": len(call_logs)
+        "version": "V4",
+        "calls_logged": len(call_logs)
     }
 
 
