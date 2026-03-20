@@ -580,12 +580,45 @@ def respond():
 @app.route("/status", methods=["POST"])
 def call_status():
     """Twilio status callback — mark calls as completed."""
+    if not validate_twilio_request():
+        return Response("Forbidden", status=403)
+    
     call_sid = request.form.get("CallSid", "")
     status = request.form.get("CallStatus", "")
     if call_sid in call_records and status in ("completed", "busy", "failed", "no-answer"):
         call_records[call_sid].outcome = status
         logger.info(f"Call {call_sid[:8]} → {status}")
     return "", 204
+
+
+@app.route("/outbound", methods=["POST"])
+def outbound_call():
+    """Outbound call greeting — when Amélie calls a prospect."""
+    if not validate_twilio_request():
+        return Response("Forbidden", status=403)
+
+    call_sid = request.form.get("CallSid", "unknown")
+    conversations.pop(call_sid, None)  # Fresh conversation
+
+    response = VoiceResponse()
+    response.say(
+        "Bonjour! C'est Amélie de Pneus Public. Comment allez-vous aujourd'hui?",
+        voice=VOICE, language=LANG
+    )
+
+    response.gather(
+        input="speech dtmf",
+        action="/respond",
+        method="POST",
+        language="fr-CA",
+        speech_timeout="auto",
+        timeout=GATHER_TIMEOUT_INITIAL,
+        speech_model="phone_call",
+        hints="pneus, installation, prix, taille"
+    )
+
+    response.say("Merci d'avoir écouté. Bonne journée!", voice=VOICE, language=LANG)
+    return str(response)
 
 
 # ============================================================
