@@ -64,8 +64,39 @@ conversations = {}
 call_logs = []
 
 
+def detect_tire_size(text):
+    """Detect and normalize tire sizes in text"""
+    # Pattern: 235/65R16 or 235/65 or 23565 or 235 65
+    # Valid: width 165-275, ratio 30-80, diameter 13-22
+    patterns = [
+        (r'(\d{3})[/\s-](\d{2,3})(?:[Rr](\d{2}))?', True),  # With diameter
+        (r'(\d{3})[/\s-](\d{2,3})', False),  # Without diameter
+    ]
+    
+    matches = re.finditer(r'\d{3}[\s/\-]?\d{2,3}(?:[Rr]\d{2})?', text)
+    for match in matches:
+        tire_str = match.group(0)
+        # Extract width, ratio, diameter
+        m = re.search(r'(\d{3})[/\s\-](\d{2,3})(?:[Rr](\d{2}))?', tire_str)
+        if m:
+            width, ratio, diameter = m.groups()
+            # Validate ranges
+            if 165 <= int(width) <= 275 and 30 <= int(ratio) <= 80:
+                # Normalize to "235 65" or "235 65 R16"
+                if diameter:
+                    normalized = f"{width} {ratio} R {diameter}"
+                else:
+                    normalized = f"{width} {ratio}"
+                # Replace in text with normalized version
+                text = text.replace(tire_str, normalized)
+    return text
+
+
 def clean_for_speech(text):
     """Clean text for natural speech"""
+    # First, detect and normalize tire sizes
+    text = detect_tire_size(text)
+    
     # Remove emojis
     emoji_pattern = re.compile(
         "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
@@ -94,11 +125,44 @@ def clean_for_speech(text):
     text = text.replace('514 459-4500', 'cinq un quatre, quatre cinq neuf, quatre cinq zéro zéro')
     text = text.replace('(514)', 'cinq un quatre')
 
-    # Fix tire size notation (avoid robotic reading)
-    import re as _re
-    # Convert 205/55R16 style to natural speech
-    text = _re.sub(r'(\d{3})[/\\](\d{2,3})[Rr](\d{2})', 
-        lambda m: f"{m.group(1)} {m.group(2)} R {m.group(3)}", text)
+    # Convert tire sizes to natural speech (235 65 R16 → "deux cent trente-cinq soixante R seize")
+    def number_to_french(num_str):
+        """Convert number to French words"""
+        num = int(num_str)
+        ones = ["", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf"]
+        teens = ["dix", "onze", "douze", "treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf"]
+        tens = ["", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante-dix", "quatre-vingt", "quatre-vingt-dix"]
+        
+        if num < 10:
+            return ones[num]
+        elif num < 20:
+            return teens[num - 10]
+        elif num < 100:
+            t = num // 10
+            o = num % 10
+            if o == 0:
+                return tens[t]
+            return f"{tens[t]}-{ones[o]}"
+        elif num < 1000:
+            h = num // 100
+            remainder = num % 100
+            result = f"{ones[h]} cent"
+            if remainder > 0:
+                result += f" {number_to_french(str(remainder))}"
+            return result
+        return str(num)
+    
+    # Replace tire sizes: "235 65 R16" → "deux cent trente-cinq soixante R seize"
+    tire_pattern = r'(\d{3})\s(\d{2,3})\s[Rr]\s(\d{2})'
+    text = re.sub(tire_pattern, 
+        lambda m: f"{number_to_french(m.group(1))} {number_to_french(m.group(2))} R {number_to_french(m.group(3))}", 
+        text)
+    
+    # Also handle "235 65" without R (diameter)
+    tire_pattern2 = r'(\d{3})\s(\d{2,3})(?!\s[Rr])'
+    text = re.sub(tire_pattern2,
+        lambda m: f"{number_to_french(m.group(1))} {number_to_french(m.group(2))}",
+        text)
 
     # Remove special chars
     text = re.sub(r'\([^)]*\)', '', text)
