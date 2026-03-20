@@ -14,7 +14,9 @@ def incoming_call():
     """Handle incoming Twilio calls"""
     response = VoiceResponse()
     response.say("Bonjour, bienvenue chez PublicTires.", language="fr-FR", voice="woman")
-    response.gather(num_digits=1, action="/handle-key", method="POST")
+    response.say("Appuyez sur 1 pour les pneus, ou 2 pour l'installation.", language="fr-FR", voice="woman")
+    response.gather(num_digits=1, action="/handle-key", method="POST", timeout=5)
+    response.redirect("/call")  # Loop back if no input
     return str(response)
 
 @app.route("/handle-key", methods=["POST"])
@@ -24,11 +26,14 @@ def handle_key():
     response = VoiceResponse()
     
     if digit == "1":
-        response.say("Pneus neufs et usages disponibles.", language="fr-FR", voice="woman")
+        response.say("Pneus neufs et usages. Visitez pneuspublic.ca pour voir nos prix.", language="fr-FR", voice="woman")
     elif digit == "2":
-        response.say("Installation a notre centre PneusPJ.", language="fr-FR", voice="woman")
+        response.say("Installation au centre PneusPJ. Adresse: 4100 rue Jarry Est, Montreal. Telephone: 514-459-4500.", language="fr-FR", voice="woman")
     else:
-        response.say("Merci d'avoir appele PublicTires.", language="fr-FR", voice="woman")
+        response.say("Je n'ai pas compris. Veuillez appuyer sur 1 ou 2.", language="fr-FR", voice="woman")
+    
+    response.say("Merci d'avoir appele PublicTires.", language="fr-FR", voice="woman")
+    response.hangup()
     
     return str(response)
 
