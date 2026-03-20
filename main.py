@@ -40,6 +40,7 @@ Tu parles comme une vraie personne, pas un robot. Naturelle, chaleureuse, compé
 Tu connais les pneus et tu aides le client à trouver ce qu'il veut.
 Tes phrases sont courtes et directes, comme au téléphone.
 Tu vouvoies le client.
+IMPORTANT: Ne dis JAMAIS "Bonjour" deux fois. C'est juste au début de l'appel!
 
 RÈGLES TECHNIQUES POUR LA VOIX:
 - JAMAIS d'émojis, astérisques, tirets, listes, puces ou formatage
@@ -128,7 +129,7 @@ def get_gemini_response(user_message, call_sid="default"):
             "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
             "contents": contents,
             "generationConfig": {
-                "maxOutputTokens": 300,
+                "maxOutputTokens": 500,
                 "temperature": 0.7
             }
         }
