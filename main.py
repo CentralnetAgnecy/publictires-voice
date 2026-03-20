@@ -1,69 +1,62 @@
 #!/usr/bin/env python3
 """
-PublicTires AI Voice Agent - ConversationRelay Edition
-Real-time conversation with Claude Sonnet 4 + ElevenLabs Amélie
-Ultra-low latency via Twilio ConversationRelay WebSocket
+PublicTires AI Voice Agent - Optimized Version
+Claude Sonnet 4 + Twilio Speech Recognition + Google fr-CA Voice
+Optimized for speed and voice consistency
 """
 
 import os
 import json
 import logging
-import uvicorn
-import requests
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from flask import Flask, request
+from twilio.twiml.voice_response import VoiceResponse
+import requests as http_requests
 
 # Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuration
-PORT = int(os.getenv("PORT", "8080"))
-DOMAIN = os.getenv("DOMAIN", "")
-WS_URL = f"wss://{DOMAIN}/ws" if DOMAIN else ""
+app = Flask(__name__)
+
+# Config
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-# ElevenLabs Amélie voice ID
-ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "UJCi4DDncuo0VJDSIegj")
+# Best French Canadian voice on Twilio (natural, consistent)
+VOICE = "Polly.Gabrielle-Neural"
+LANG = "fr-CA"
 
-# Voice settings: voiceId-model_speed_stability_similarity
-# Flash 2.5 = fastest, speed 1.1 = slightly faster, stability 0.8 = natural
-VOICE_CONFIG = f"{ELEVENLABS_VOICE_ID}-eleven_flash_v2_5_1.1_0.8_0.8"
-
-WELCOME_GREETING = "Bonjour! Bienvenue chez PublicTires. Comment est-ce que je peux vous aider?"
-
-SYSTEM_PROMPT = """Tu es Amélie, une agente de support client chaleureuse et professionnelle pour PublicTires.
+SYSTEM_PROMPT = """Tu es Amélie, une agente de support client chaleureuse pour PublicTires.
 
 CONTEXTE:
 - PublicTires vend des pneus neufs et usagés en ligne
-- Site français: pneuspublic.ca
-- Site anglais: publictires.ca  
+- Site: pneuspublic.ca (français) / publictires.ca (anglais)
 - Installation: Centre Pneus PJ Express, 4100 rue Jarry Est, Montréal
 - Téléphone installation: 514-459-4500
 - Ramassage GRATUIT pour clients PublicTires
-- Les prix sont sur le site web
 
-RÈGLES IMPORTANTES:
-1. Parle en français québécois naturel et chaleureux
-2. Sois courte et claire, deux à trois phrases max par réponse
-3. Pour les prix, dirige TOUJOURS vers pneuspublic point ca
-4. Ne JAMAIS inventer un prix ou une disponibilité
-5. Sois conversationnelle, pas robotique
-6. Cette conversation est vocale: épelle les nombres en lettres
-7. Ne mets pas d'émojis ni de symboles spéciaux dans tes réponses
-8. Ne mets pas de puces, d'astérisques ou de formatage markdown
-9. Écris les URLs en les épelant: pneuspublic point ca
-10. Propose toujours d'aider davantage"""
+RÈGLES:
+1. Parle en français québécois naturel
+2. Maximum 2-3 phrases par réponse (COURT!)
+3. Pour les prix: dirige vers pneuspublic.ca
+4. Ne JAMAIS inventer un prix
+5. Sois conversationnelle
+6. Propose toujours d'aider davantage"""
 
-# Store active call sessions
-sessions = {}
-
-# Create FastAPI app
-app = FastAPI()
+# Conversation memory per call
+conversations = {}
 
 
-def get_claude_response(messages):
-    """Get response from Claude Sonnet 4 via API"""
+def get_claude_response(user_message, call_sid="default"):
+    """Get response from Claude Sonnet 4 - optimized for speed"""
+    if not ANTHROPIC_API_KEY:
+        return "Visitez pneuspublic.ca pour nous contacter."
+
+    if call_sid not in conversations:
+        conversations[call_sid] = []
+
+    conversations[call_sid].append({"role": "user", "content": user_message})
+    history = conversations[call_sid][-4:]  # Keep only last 4 messages for speed
+
     try:
         headers = {
             "x-api-key": ANTHROPIC_API_KEY,
@@ -71,157 +64,129 @@ def get_claude_response(messages):
             "anthropic-version": "2023-06-01"
         }
 
-        # Convert messages format (remove system, keep user/assistant)
-        api_messages = [m for m in messages if m["role"] != "system"]
-        system_content = next((m["content"] for m in messages if m["role"] == "system"), SYSTEM_PROMPT)
-
         data = {
             "model": "claude-sonnet-4-20250514",
-            "max_tokens": 150,
-            "system": system_content,
-            "messages": api_messages
+            "max_tokens": 100,  # Short responses = faster
+            "system": SYSTEM_PROMPT,
+            "messages": history
         }
 
-        response = requests.post(
+        response = http_requests.post(
             "https://api.anthropic.com/v1/messages",
             headers=headers,
             json=data,
-            timeout=8
+            timeout=6
         )
 
         if response.status_code == 200:
             result = response.json()
-            return result["content"][0]["text"]
+            msg = result["content"][0]["text"]
+            conversations[call_sid].append({"role": "assistant", "content": msg})
+            return msg
         else:
-            logger.error(f"Claude API error: {response.status_code}")
-            return "Désolé, une petite erreur est survenue. Pouvez-vous répéter votre question?"
-
+            logger.error(f"Claude error: {response.status_code}")
+            return "Désolé, visitez pneuspublic.ca ou rappelez-nous."
     except Exception as e:
-        logger.error(f"Claude error: {str(e)}")
-        return "Excusez-moi, je n'ai pas pu traiter votre demande. Pouvez-vous réessayer?"
+        logger.error(f"Error: {str(e)}")
+        return "Visitez pneuspublic.ca pour nous contacter."
 
 
-@app.get("/")
-async def health():
-    return {"status": "healthy", "service": "PublicTires Voice Agent", "ai": "Claude Sonnet 4", "voice": "ElevenLabs Amélie", "mode": "ConversationRelay"}
+@app.route("/")
+def health():
+    return "PublicTires Voice Agent ✓ (Claude Sonnet 4 + Polly Gabrielle)"
 
 
-@app.post("/twiml")
-async def twiml_endpoint():
-    """Returns TwiML to connect call to ConversationRelay WebSocket"""
-    xml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
-    <Response>
-      <Connect>
-        <ConversationRelay
-          url="{WS_URL}"
-          welcomeGreeting="{WELCOME_GREETING}"
-          ttsProvider="ElevenLabs"
-          voice="{VOICE_CONFIG}"
-          language="fr-CA"
-          transcriptionLanguage="fr-CA"
-          ttsLanguage="fr-CA"
-          transcriptionProvider="Deepgram"
-          speechModel="nova-3-general"
-          interruptible="speech"
-          interruptSensitivity="medium"
-          dtmfDetection="true"
-          elevenlabsTextNormalization="on"
-        >
-          <Language code="fr-CA" ttsProvider="ElevenLabs" voice="{VOICE_CONFIG}" transcriptionProvider="Deepgram" speechModel="nova-3-general" />
-        </ConversationRelay>
-      </Connect>
-    </Response>"""
+@app.route("/call", methods=["POST"])
+def incoming_call():
+    """Handle incoming call - greeting + speech input"""
+    call_sid = request.form.get("CallSid", "unknown")
+    conversations[call_sid] = []
 
-    return Response(content=xml_response, media_type="text/xml")
+    response = VoiceResponse()
 
+    response.say(
+        "Bonjour! Bienvenue chez PublicTires. Comment est-ce que je peux vous aider?",
+        voice=VOICE,
+        language=LANG
+    )
 
-@app.post("/call")
-async def call_endpoint():
-    """Fallback: same as /twiml for Twilio webhook compatibility"""
-    return await twiml_endpoint()
+    gather = response.gather(
+        input="speech dtmf",
+        action="/respond",
+        method="POST",
+        language="fr-CA",
+        speech_timeout="auto",
+        timeout=10,
+        speech_model="phone_call",
+        hints="pneus, installation, prix, taille, Michelin, Bridgestone, hiver, été"
+    )
+
+    response.say("Je n'ai pas entendu. Pouvez-vous répéter?", voice=VOICE, language=LANG)
+    response.redirect("/call")
+
+    return str(response)
 
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time ConversationRelay communication"""
-    await websocket.accept()
-    call_sid = None
+@app.route("/respond", methods=["POST"])
+def respond():
+    """Process speech and respond with Claude"""
+    call_sid = request.form.get("CallSid", "unknown")
+    speech = request.form.get("SpeechResult", "")
+    digits = request.form.get("Digits", "")
 
-    try:
-        while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
+    response = VoiceResponse()
 
-            if message["type"] == "setup":
-                call_sid = message.get("callSid", "unknown")
-                logger.info(f"New call connected: {call_sid}")
-                websocket.call_sid = call_sid
-                sessions[call_sid] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # Determine input
+    if speech:
+        user_input = speech
+    elif digits == "1":
+        user_input = "Informations sur vos pneus"
+    elif digits == "2":
+        user_input = "Informations sur l'installation"
+    else:
+        user_input = speech or ""
 
-            elif message["type"] == "prompt":
-                voice_prompt = message.get("voicePrompt", "")
-                logger.info(f"Client said: '{voice_prompt}'")
+    if not user_input:
+        response.say("Pouvez-vous répéter?", voice=VOICE, language=LANG)
+        response.redirect("/call")
+        return str(response)
 
-                if not voice_prompt.strip():
-                    continue
+    logger.info(f"Client: '{user_input}'")
 
-                conversation = sessions.get(getattr(websocket, 'call_sid', None), [{"role": "system", "content": SYSTEM_PROMPT}])
-                conversation.append({"role": "user", "content": voice_prompt})
+    # Get Claude response
+    claude_response = get_claude_response(user_input, call_sid)
+    logger.info(f"Amélie: '{claude_response[:80]}...'")
 
-                # Get Claude's response
-                response_text = get_claude_response(conversation)
-                conversation.append({"role": "assistant", "content": response_text})
+    # Speak response
+    response.say(claude_response, voice=VOICE, language=LANG)
 
-                # Send response back to ConversationRelay for TTS
-                await websocket.send_text(
-                    json.dumps({
-                        "type": "text",
-                        "token": response_text,
-                        "last": True
-                    })
-                )
-                logger.info(f"Amélie says: '{response_text[:100]}...'")
+    # Continue conversation
+    gather = response.gather(
+        input="speech dtmf",
+        action="/respond",
+        method="POST",
+        language="fr-CA",
+        speech_timeout="auto",
+        timeout=8,
+        speech_model="phone_call",
+        hints="oui, non, merci, au revoir, pneus, installation, prix"
+    )
 
-            elif message["type"] == "interrupt":
-                logger.info("Client interrupted - stopping current response")
+    response.say("Merci d'avoir appelé PublicTires. Bonne journée!", voice=VOICE, language=LANG)
 
-            elif message["type"] == "dtmf":
-                digit = message.get("digit", "")
-                logger.info(f"DTMF received: {digit}")
+    return str(response)
 
-                # Handle DTMF as text input
-                dtmf_map = {
-                    "1": "Je veux des informations sur vos pneus",
-                    "2": "Je veux des informations sur l'installation",
-                    "0": "Je veux parler à quelqu'un"
-                }
 
-                if digit in dtmf_map:
-                    conversation = sessions.get(getattr(websocket, 'call_sid', None), [{"role": "system", "content": SYSTEM_PROMPT}])
-                    conversation.append({"role": "user", "content": dtmf_map[digit]})
-                    response_text = get_claude_response(conversation)
-                    conversation.append({"role": "assistant", "content": response_text})
-
-                    await websocket.send_text(
-                        json.dumps({
-                            "type": "text",
-                            "token": response_text,
-                            "last": True
-                        })
-                    )
-
-            else:
-                logger.debug(f"Unknown message type: {message.get('type', 'unknown')}")
-
-    except WebSocketDisconnect:
-        logger.info(f"Call ended: {call_sid}")
-        if call_sid:
-            sessions.pop(call_sid, None)
-    except Exception as e:
-        logger.error(f"WebSocket error: {str(e)}")
-        if call_sid:
-            sessions.pop(call_sid, None)
+@app.route("/health")
+def health_check():
+    return {
+        "status": "healthy",
+        "ai": "Claude Sonnet 4",
+        "voice": "Amazon Polly Gabrielle-Neural (fr-CA)",
+        "mode": "Speech Recognition + AI",
+    }
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
