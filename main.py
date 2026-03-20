@@ -1,178 +1,98 @@
 #!/usr/bin/env python3
 """
-PublicTires Voice Agent - Claude Sonnet 4.6 + Twilio + ElevenLabs
-Full conversational AI with intelligent menu
+PublicTires Voice Agent - Claude Sonnet 4.6 + Twilio
 """
 
 import os
-import json
 from flask import Flask, request
 from twilio.twiml.voice_response import VoiceResponse
-import anthropic
+
+try:
+    import anthropic
+    CLAUDE_AVAILABLE = True
+except ImportError:
+    CLAUDE_AVAILABLE = False
 
 app = Flask(__name__)
 
-# Initialize Claude Sonnet 4.6
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+# Initialize Claude if available
+client = None
+if CLAUDE_AVAILABLE:
+    try:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    except:
+        CLAUDE_AVAILABLE = False
 
-SYSTEM_PROMPT = """Tu es un agent de support client amical et professionnel pour PublicTires.
-
-Mission: Aider les clients avec des questions sur les pneus (neufs/usagés) et l'installation.
-
-Règles:
-1. Réponds toujours en français québécois naturel
-2. Sois chaleureux et conversationnel
-3. Pour les prix: Dirige vers pneuspublic.ca
-4. Pour l'installation: Centre PneusPJ, 4100 rue Jarry Est, Montréal, 514-459-4500
-5. Mentionne: Ramassage gratuit pour clients PublicTires
-6. Sois court et clair (max 2-3 phrases)
-7. Reste toujours courtois et professionnel
-
-Réponds directement sans préambule."""
+SYSTEM_PROMPT = """Tu es un agent de support client pour PublicTires.
+Aide sur pneus (neufs/usagés) et installation.
+Réponds en français québécois court et clair.
+Prix: pneuspublic.ca
+Installation: 4100 rue Jarry Est, Montréal, 514-459-4500
+Ramassage gratuit pour clients."""
 
 def get_claude_response(user_message):
-    """Get intelligent response from Claude Sonnet 4.6"""
+    """Get response from Claude Sonnet 4.6"""
+    if not CLAUDE_AVAILABLE or not client:
+        return "Service temporairement indisponible. Veuillez appuyer sur 1 ou 2."
+    
     try:
         message = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=150,
             system=SYSTEM_PROMPT,
-            messages=[
-                {"role": "user", "content": user_message}
-            ]
+            messages=[{"role": "user", "content": user_message}]
         )
         return message.content[0].text
     except Exception as e:
         print(f"Claude error: {str(e)}")
-        return "Désolé, une erreur est survenue. Veuillez réessayer."
+        return "Une erreur est survenue. Veuillez réessayer."
 
 @app.route("/")
 def health():
-    return "PublicTires Voice Agent ✓ (Claude Sonnet 4.6)"
+    status = "Claude Sonnet 4.6" if CLAUDE_AVAILABLE else "Simple Menu"
+    return f"PublicTires Voice Agent ✓ ({status})"
 
 @app.route("/call", methods=["POST"])
 def incoming_call():
-    """Handle incoming Twilio calls - Greeting"""
+    """Handle incoming Twilio calls"""
     response = VoiceResponse()
     
-    # Greeting with Amélie
     response.say(
         "Bonjour! Bienvenue chez PublicTires. "
-        "Vous pouvez appuyer sur 1 pour les pneus, 2 pour l'installation, "
-        "ou simplement parler votre question.",
+        "Appuyez sur 1 pour les pneus ou 2 pour l'installation.",
         language="fr-FR",
         voice="woman"
     )
     
-    # Record voice for free-form question (10 seconds max)
-    response.record(
-        max_speech_time=10,
-        action="/process-speech",
-        method="POST",
-        speech_timeout=3,
-        transcribe=True,
-        transcribe_callback="/transcribed"
-    )
+    response.gather(num_digits=1, action="/process", method="POST", timeout=10)
+    response.redirect("/call")
     
     return str(response)
 
-@app.route("/transcribed", methods=["POST"])
-def transcribed():
-    """Receive transcription from Twilio"""
-    # This is just a callback - actual processing in /process-speech
-    return ""
-
-@app.route("/process-speech", methods=["POST"])
-def process_speech():
-    """Process recorded/transcribed speech and respond with Claude"""
-    response = VoiceResponse()
-    
-    transcription = request.form.get("SpeechResult", "").strip()
-    
-    # Check if user said "1" or "2" (menu options)
-    if transcription in ["1", "un", "pneus"]:
-        user_input = "Je veux des informations sur les pneus"
-    elif transcription in ["2", "deux", "installation"]:
-        user_input = "Je veux des informations sur l'installation"
-    elif transcription:
-        user_input = transcription
-    else:
-        response.say(
-            "Je n'ai pas bien entendu. Veuillez appuyer sur 1 pour les pneus, ou 2 pour l'installation.",
-            language="fr-FR",
-            voice="woman"
-        )
-        response.gather(num_digits=1, action="/menu-choice", method="POST", timeout=5)
-        return str(response)
-    
-    # Get Claude's response
-    claude_response = get_claude_response(user_input)
-    
-    # Speak the response with Amélie
-    response.say(
-        claude_response,
-        language="fr-FR",
-        voice="woman"
-    )
-    
-    # Ask if they want to continue
-    response.say(
-        "Avez-vous d'autres questions?",
-        language="fr-FR",
-        voice="woman"
-    )
-    
-    response.gather(
-        num_digits=1,
-        action="/continue-choice",
-        method="POST",
-        timeout=5
-    )
-    
-    response.hangup()
-    
-    return str(response)
-
-@app.route("/menu-choice", methods=["POST"])
-def menu_choice():
-    """Handle menu choice (1 or 2)"""
+@app.route("/process", methods=["POST"])
+def process():
+    """Process menu choice with Claude intelligence"""
     digit = request.form.get("Digits", "0")
     response = VoiceResponse()
     
     if digit == "1":
-        claude_response = get_claude_response("Je veux savoir sur vos pneus")
+        if CLAUDE_AVAILABLE:
+            msg = get_claude_response("Parlez-moi de vos pneus neufs et usagés")
+        else:
+            msg = "Pneus neufs et usagés disponibles. Visitez pneuspublic.ca"
     elif digit == "2":
-        claude_response = get_claude_response("Je veux connaître vos services d'installation")
+        if CLAUDE_AVAILABLE:
+            msg = get_claude_response("Quels sont vos services d'installation?")
+        else:
+            msg = "Installation au Centre PneusPJ. 4100 rue Jarry Est, Montréal. 514-459-4500."
     else:
-        response.say(
-            "Appuyez sur 1 ou 2.",
-            language="fr-FR",
-            voice="woman"
-        )
+        response.say("Appuyez sur 1 ou 2.", language="fr-FR", voice="woman")
         response.redirect("/call")
         return str(response)
     
-    response.say(claude_response, language="fr-FR", voice="woman")
-    response.say("Merci!", language="fr-FR", voice="woman")
+    response.say(msg, language="fr-FR", voice="woman")
+    response.say("Merci d'avoir appelé PublicTires!", language="fr-FR", voice="woman")
     response.hangup()
-    
-    return str(response)
-
-@app.route("/continue-choice", methods=["POST"])
-def continue_choice():
-    """Handle continue or end"""
-    digit = request.form.get("Digits", "0")
-    response = VoiceResponse()
-    
-    if digit == "1":
-        response.redirect("/call")
-    else:
-        response.say(
-            "Merci d'avoir appelé PublicTires. Au revoir!",
-            language="fr-FR",
-            voice="woman"
-        )
-        response.hangup()
     
     return str(response)
 
@@ -181,11 +101,8 @@ def health_check():
     return {
         "status": "healthy",
         "service": "PublicTires Voice Agent",
-        "ai": "Claude Sonnet 4.6",
+        "ai": "Claude Sonnet 4.6" if CLAUDE_AVAILABLE else "Simple Menu",
         "voice": "Amélie (ElevenLabs)",
-        "transcriber": "Twilio",
-        "language": "French",
-        "mode": "Menu + Free Conversation"
     }, 200
 
 if __name__ == "__main__":
